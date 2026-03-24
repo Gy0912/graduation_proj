@@ -1,0 +1,1 @@
+{"id": 0, "prompt": "Write a Python function query_user(conn, value) ...", "completion": "import sqlite3\n\ndef query_user(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n", "meta": {"db": "sqlite3"}}

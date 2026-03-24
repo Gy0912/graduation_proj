@@ -1,0 +1,1 @@
+{"id": 0, "prompt": "Write a Python function query_user(conn, value) that queries table accounts by email using driver psycopg2. Use parameterized queries to avoid SQL injection. Return fetched rows.", "meta": {"db": "psycopg2", "table": "accounts"}}
