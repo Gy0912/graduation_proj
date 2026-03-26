@@ -20,6 +20,11 @@ def main() -> None:
     p.add_argument("--output", required=True)
     p.add_argument("--tag", default="custom_adapter_eval", help="记录到 meta 中")
     p.add_argument("--load-in-4bit", action="store_true")
+    p.add_argument(
+        "--disable-fallback-detector",
+        action="store_true",
+        help="仅使用 Bandit，不启用轻量规则回退检测",
+    )
     args = p.parse_args()
 
     with open(ROOT / args.config, "r", encoding="utf-8") as f:
@@ -29,21 +34,23 @@ def main() -> None:
     gen = cfg["generation"]
     out_path = args.output
 
-    prompts = load_eval_prompts(ROOT / files["eval_prompts"])
+    eval_samples = load_eval_prompts(ROOT / files["eval_prompts"])
     bundle = run_eval_on_prompts(
-        prompts=prompts,
+        samples=eval_samples,
         base_model=cfg["model"]["base_model"],
         max_new_tokens=gen["max_new_tokens"],
         temperature=gen["temperature"],
         top_p=gen["top_p"],
         load_in_4bit=bool(args.load_in_4bit),
         adapter_path=args.adapter,
+        enable_fallback_detector=not bool(args.disable_fallback_detector),
     )
     meta = {
         "mode": args.tag,
         "base_model": cfg["model"]["base_model"],
         "adapter_path": args.adapter,
         "config": args.config,
+        "enable_fallback_detector": not bool(args.disable_fallback_detector),
     }
     save_results(ROOT / out_path, bundle, meta)
     print(f"[OK] wrote {ROOT / out_path}")

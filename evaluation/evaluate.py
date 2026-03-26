@@ -60,6 +60,11 @@ def main() -> None:
         action="store_true",
         help="若适配器不存在则给出警告并退出（码 0）",
     )
+    parser.add_argument(
+        "--disable-fallback-detector",
+        action="store_true",
+        help="仅使用 Bandit，不启用轻量规则回退检测",
+    )
     args = parser.parse_args()
 
     with open(ROOT / args.config, "r", encoding="utf-8") as f:
@@ -86,9 +91,9 @@ def main() -> None:
     )
     num_workers = int(ev_cfg.get("dataloader_num_workers", 2))
     pin_memory = bool(ev_cfg.get("dataloader_pin_memory", True))
-    prompts = load_eval_prompts(ROOT / files["eval_prompts"])
+    eval_samples = load_eval_prompts(ROOT / files["eval_prompts"])
     bundle = run_eval_on_prompts(
-        prompts=prompts,
+        samples=eval_samples,
         base_model=cfg["model"]["base_model"],
         max_new_tokens=gen["max_new_tokens"],
         temperature=gen["temperature"],
@@ -99,6 +104,7 @@ def main() -> None:
         dataloader_num_workers=num_workers,
         dataloader_pin_memory=pin_memory,
         debug_timing=True,
+        enable_fallback_detector=not bool(args.disable_fallback_detector),
     )
     meta = {
         "mode": args.model,
@@ -110,6 +116,7 @@ def main() -> None:
         "dataloader_pin_memory": pin_memory,
         "config": args.config,
         "eval_dataset": files["eval_prompts"],
+        "enable_fallback_detector": not bool(args.disable_fallback_detector),
     }
     save_results(ROOT / output_path, bundle, meta)
     print(f"[OK] wrote {ROOT / output_path}")

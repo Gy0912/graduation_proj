@@ -20,14 +20,15 @@ paths:
 dataset:
   seed: 42
   val_ratio: 0.1
+  # 以下三项供 scripts/build_dataset.py（合成 jsonl）使用；主 SFT 数据来自 data/train_expanded.json
   train_sft_n: 800
   val_sft_n: 100
   eval_prompts_n: 120
 
 files:
-  # 主训练集（instruction / input / output）
+  # 主训练集（instruction / input / output + attack_type / difficulty / task_type）
   sql_security_dataset: dataset/sql_security_dataset.json
-  # 扩展流水线（约 1.6k+ 条）：dataset/generate_expanded_dataset.py
+  # 扩展流水线（建议 2000–3000 条总量）：python dataset/generate_expanded_dataset.py --num_samples 2500
   train_sft_json: data/train_expanded.json
   dpo_pairs: data/dpo_pairs.jsonl
   train_sft: dataset/sft_train.jsonl

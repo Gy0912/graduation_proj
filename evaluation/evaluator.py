@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -10,20 +11,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from detection.bandit_wrapper import run_bandit
 from detection.sql_injection_detector import SQLInjectionDetector, extract_python_code
 from evaluation.metrics import MetricBundle, aggregate_metrics
-
-
-def _functional_heuristic(code: str) -> float:
-    c = code or ""
-    score = 0.0
-    if "def " in c:
-        score += 0.35
-    if "execute" in c.lower() or "cursor" in c.lower():
-        score += 0.35
-    if "return" in c:
-        score += 0.3
-    return min(score, 1.0)
 
 
 def load_model_and_tokenizer(
@@ -73,7 +63,7 @@ def load_model_and_tokenizer(
 
 
 def run_eval_on_prompts(
-    prompts: list[str],
+    samples: list[dict[str, Any]],
     base_model: str,
     max_new_tokens: int,
     temperature: float,
@@ -84,14 +74,17 @@ def run_eval_on_prompts(
     dataloader_num_workers: int = 2,
     dataloader_pin_memory: bool = True,
     debug_timing: bool = True,
+    enable_fallback_detector: bool = True,
 ) -> MetricBundle:
-    det = SQLInjectionDetector()
+    det = SQLInjectionDetector() if enable_fallback_detector else None
     model, tok, device = load_model_and_tokenizer(
         base_model=base_model,
         load_in_4bit=load_in_4bit,
         adapter_path=adapter_path,
     )
 
+    source_samples = samples
+    prompts = [str(s["prompt"]) for s in source_samples]
     enc = tok(
         prompts,
         padding=True,
@@ -118,7 +111,7 @@ def run_eval_on_prompts(
         f"pin_memory={bool(dataloader_pin_memory)}"
     )
 
-    samples: list[dict[str, Any]] = []
+    evaluated_samples: list[dict[str, Any]] = []
     with torch.no_grad():
         for batch_idx, (input_ids, attention_mask, sample_ids) in enumerate(tqdm(loader, desc="eval")):
             t0 = time.perf_counter()
@@ -144,17 +137,49 @@ def run_eval_on_prompts(
                 gen_tokens = out_ids[row, prompt_len:]
                 text = tok.decode(gen_tokens, skip_special_tokens=True)
                 code = extract_python_code(text)
-                res = det.analyze(code)
                 sample_id = int(sample_ids[row].item())
-                samples.append(
+                src = source_samples[sample_id]
+
+                if code is None:
+                    evaluated_samples.append(
+                        {
+                            "id": sample_id,
+                            "code": "",
+                            "is_vulnerable": False,
+                            "attack_type": str(src.get("attack_type", "unknown")),
+                            "difficulty": str(src.get("difficulty", "unknown")),
+                            "task_type": str(src.get("task_type", "unknown")),
+                            "bandit_issues": [],
+                            "invalid_extraction": True,
+                        }
+                    )
+                    continue
+
+                bandit_result = _run_bandit_on_temp(code, sample_id)
+                bandit_vuln = bool(bandit_result.get("is_vulnerable", False))
+                bandit_issues = bandit_result.get("issues", [])
+                if not isinstance(bandit_issues, list):
+                    bandit_issues = []
+
+                fallback_res = det.analyze(code) if det is not None else None
+                fallback_vuln = bool(fallback_res.is_vulnerable) if fallback_res else False
+                final_vuln = bandit_vuln or fallback_vuln
+
+                evaluated_samples.append(
                     {
                         "id": sample_id,
                         "prompt": prompts[sample_id],
                         "raw_output": text,
-                        "extracted_code": code,
-                        "is_vulnerable": res.is_vulnerable,
-                        "violations": res.violations,
-                        "functional_score": _functional_heuristic(code),
+                        "code": code,
+                        "is_vulnerable": final_vuln,
+                        "attack_type": str(src.get("attack_type", "unknown")),
+                        "difficulty": str(src.get("difficulty", "unknown")),
+                        "task_type": str(src.get("task_type", "unknown")),
+                        "bandit_issues": bandit_issues,
+                        "fallback_violations": (
+                            fallback_res.violations if fallback_res is not None else []
+                        ),
+                        "invalid_extraction": False,
                     }
                 )
 
@@ -162,8 +187,8 @@ def run_eval_on_prompts(
                 dt = time.perf_counter() - t0
                 print(f"[eval] batch={batch_idx} time={dt:.3f}s")
 
-    samples.sort(key=lambda x: int(x["id"]))
-    return aggregate_metrics(samples)
+    evaluated_samples.sort(key=lambda x: int(x["id"]))
+    return aggregate_metrics(evaluated_samples)
 
 
 def save_results(path: Path, bundle: MetricBundle, meta: dict[str, Any]) -> None:
@@ -172,11 +197,21 @@ def save_results(path: Path, bundle: MetricBundle, meta: dict[str, Any]) -> None
         "meta": meta,
         "summary": {
             "n_samples": bundle.n_samples,
+            "overall_sql_injection_rate": bundle.overall_sql_injection_rate,
             "sql_injection_rate": bundle.sql_injection_rate,
             "safe_code_generation_rate": bundle.safe_code_generation_rate,
-            "functional_correctness_avg": bundle.functional_correctness_avg,
+            "by_attack_type": bundle.by_attack_type,
+            "by_difficulty": bundle.by_difficulty,
+            "by_task_type": bundle.by_task_type,
         },
         "per_sample": bundle.per_sample,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _run_bandit_on_temp(code: str, sample_id: int) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="sql_eval_") as tmpdir:
+        file_path = Path(tmpdir) / f"temp_eval_{sample_id}.py"
+        file_path.write_text(code, encoding="utf-8")
+        return run_bandit(file_path)

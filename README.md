@@ -59,12 +59,12 @@ QLoRA 相关脚本统一使用 bitsandbytes 4bit：
 │   └── dpo.yaml                           # DPO 覆盖项（与 default.yaml 合并）
 │
 ├── data/                                  # **最终数据**（论文主用；勿删）
-│   ├── train_expanded.json                # 扩展 SFT 训练集（instruction/input/output）
-│   ├── eval_expanded.json                 # 统一评测 prompts（与训练去重）
+│   ├── train_expanded.json                # 扩展 SFT（instruction/input/output + 元数据字段）
+│   ├── eval_expanded.json                 # 统一评测（prompt + attack_type/difficulty/task_type）
 │   └── dpo_pairs.jsonl                    # DPO 偏好对：prompt / chosen / rejected
 │
 ├── dataset/                               # 数据构建与中间 jsonl
-│   ├── generate_expanded_dataset.py       # **入口**：生成 data/ 与 dataset/*.jsonl
+│   ├── generate_expanded_dataset.py       # **入口**：生成 data/*.json（--num_samples）
 │   ├── generate_sql_security_dataset.py   # 旧版小数据集生成器
 │   ├── sql_security_dataset.json          # 旧版小训练集（无扩展数据时的回退）
 │   ├── synthetic_sql.py                   # 合成 SQL 片段等工具
@@ -74,8 +74,9 @@ QLoRA 相关脚本统一使用 bitsandbytes 4bit：
 │   ├── examples/                          # 示例 json/jsonl
 │   └── README.md
 │
-├── detection/                             # **核心**：SQL 注入规则检测（评测指标依赖）
-│   ├── sql_injection_detector.py          # 检测器与代码抽取
+├── detection/                             # **核心**：Bandit 封装 + 轻量 fallback 检测
+│   ├── bandit_wrapper.py                  # Bandit JSON 调用与结果解析
+│   ├── sql_injection_detector.py          # 代码抽取与可选轻量规则检查
 │   └── __init__.py
 │
 ├── evaluation/                            # **核心**：生成 + 指标
@@ -191,91 +192,195 @@ Get-ChildItem -Recurse -Name | Select-Object -First 80
 Explanation:  
 确认目录与 `configs/default.yaml`、`README` 中结构一致。
 
-## 5. 统一评测与指标
+## 5. 数据集设计（Dataset Design）
 
-所有方法使用完全相同评测数据集：`configs/default.yaml` 中 `files.eval_prompts`（默认 `data/eval_expanded.json`）。
+### 5.1 样本格式
 
-核心指标：
+每条训练/评测样本包含以下字段（由 `dataset/generate_expanded_dataset.py` 生成）：
 
-- `sql_injection_rate`（越低越好）
-- `safe_code_generation_rate`（越高越好）
-- `reduction vs baseline`（相对 baseline 的注入率下降百分比）
-
-## 6. 输出文件说明
-
-每个实验都会输出一个独立 JSON：
-
-- `outputs/baseline_results.json`
-- `outputs/lora_only_results.json`
-- `outputs/lora_sft_results.json`
-- `outputs/lora_dpo_results.json`
-- `outputs/qlora_only_results.json`
-- `outputs/qlora_sft_results.json`
-- `outputs/qlora_dpo_results.json`
-
-统一汇总文件：
-
-- `outputs/comparison_summary.json`
-  - 包含全部 7 种方法
-  - 所有指标基于当前结果文件重新计算
-
-## 7. 环境准备
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe dataset\generate_expanded_dataset.py
+```json
+{
+  "instruction": "...",
+  "input": "...",
+  "output": "...",
+  "attack_type": "...",
+  "difficulty": "easy | medium | hard",
+  "task_type": "generation | fix"
+}
 ```
 
-## 8. Evaluation Optimization
+评测文件 `data/eval_expanded.json` 中每条另含 `prompt`（由 instruction + input 拼成，与训练模板一致）。
 
-### 8.1 为什么 GPU 利用率会波动
+### 5.2 attack_type（攻击模式）
 
-评测阶段如果逐条生成（batch=1）且在循环中频繁做分词，会出现以下现象：
+| 取值 | 含义 |
+|------|------|
+| `string_concat` | 字符串拼接构造 SQL |
+| `fstring` | f-string 插值拼入查询 |
+| `format_string` | `str.format` / `%` 等格式化拼入 SQL |
+| `fake_sanitization` | 表面清洗（如 `replace`）后仍拼接 |
+| `orm_misuse` | SQLAlchemy `text()` 等误用导致拼接注入 |
+| `parameterized_query` | 安全范式（占位符 / 绑定参数）；亦可用于「修复错误参数用法」类题目 |
 
-- GPU 等待 CPU 准备输入，利用率出现锯齿
-- CPU-GPU 频繁小包传输，吞吐偏低
-- DataLoader 配置过保守时，GPU 空转时间增加
+### 5.3 difficulty（难度）
 
-### 8.2 已做的优化
+- **easy**：直观注入（如明显拼接、`OR 1=1` 等）。
+- **medium**：轻度混淆（注释、多段拼接、拆分）。
+- **hard**：间接注入（小函数封装拼接、ORM 多层组合、多步构造 SQL）。
 
-- 增加可配置评测批大小：`per_device_eval_batch_size`（默认 4）
-- 评测前一次性预分词，避免在推理循环中再做 tokenization
-- DataLoader 使用 `num_workers=2`（Windows 友好）和 `pin_memory=True`
-- 推理明确使用 `model.eval()` + `torch.no_grad()`
-- 输入张量显式搬运到 CUDA，并打印设备信息
-- 增加调试日志：batch size、device、输入 tensor device、每 batch 用时
+### 5.4 task_type（任务类型）
 
-### 8.3 如何调参
+- **generation**：根据描述**新写**数据库访问代码；对抗性措辞下仍要求输出参数化安全实现。
+- **fix**：给定**含漏洞**的代码片段，输出修复后的安全实现。
 
-- 显存约 8GB 建议从 `--batch_size 4` 开始
-- 若显存充足可尝试 `--batch_size 8`
-- 若遇到 OOM，请降回 `--batch_size 2` 或 `4`
+### 5.5 规模与划分
 
-## How to run (manual steps)
+- 建议总样本量 **2000–3000**（`--num_samples` 为训练与评测之和）。
+- 生成器在 36 个桶（6×3×2）间均衡分配；评测集按 `--eval_ratio`（默认 0.12）分层划分，与训练集 **prompt 去重、无交集**。
+
+---
+
+## 6. 评测方法（Evaluation Method）
+
+当前评测以 **Bandit** 为主、**轻量规则**为可选回退。
+
+- **主检测**：`detection/bandit_wrapper.py` 调用 `bandit <file> -f json`；`results` 非空则计为存在问题（含典型 SQL 相关规则如 B608）。
+- **可选回退**：`detection/sql_injection_detector.py` 对 `execute`/f-string 等做补充匹配。
+- **最终标签**：Bandit 或回退任一命中则 `is_vulnerable=true`。
+
+**为何使用外部工具**：Bandit 为广泛使用的 Python 安全扫描器，输出格式稳定，便于在论文中说明评测不依赖项目私有启发式；回退用于减少极端漏报。
+
+---
+
+## 7. 评测流水线（Evaluation Pipeline）
+
+1. 模型生成 `raw_output`。
+2. `extract_python_code` 抽取可 `ast.parse` 的 Python 代码。
+3. 抽取成功：写入临时 `.py`，对该文件运行 Bandit。
+4. 抽取失败：`invalid_extraction=true`。
+5. `prompt_loader` 透传 `attack_type`、`difficulty`、`task_type`；`metrics` 汇总总体与分组（含 `by_task_type`）。
+
+---
+
+## 8. 指标（Metrics）
+
+- 总体：`overall_sql_injection_rate`（与 `sql_injection_rate` 同义）
+- `safe_code_generation_rate = 1 - overall_sql_injection_rate`
+- 分组：`by_attack_type`、`by_difficulty`、`by_task_type`
+
+```json
+{
+  "overall_sql_injection_rate": 0.02,
+  "by_attack_type": { "string_concat": 0.15 },
+  "by_difficulty": { "easy": 0.01, "medium": 0.05, "hard": 0.20 },
+  "by_task_type": { "generation": 0.03, "fix": 0.04 }
+}
+```
+
+---
+
+## 9. 输出文件说明
+
+- `outputs/baseline_results.json` … `outputs/qlora_dpo_results.json`（七种实验各一份）
+- `outputs/comparison_summary.json`（`scripts/compare_results.py`）
+
+---
+
+## 10. 环境准备
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install bandit
+```
+
+随后须先按 **第 12 节** 生成 `data/train_expanded.json` 等，再训练与评测。
+
+---
+
+## 11. 评测性能优化（GPU）
+
+### 11.1 现象
+
+逐条 batch=1、循环内重复分词时，易出现 GPU 等待 CPU、利用率锯齿。
+
+### 11.2 已实现优化
+
+- `evaluation/evaluate.py --batch_size` 覆盖 `per_device_eval_batch_size`
+- 预分词 + `DataLoader`（`num_workers`、`pin_memory`）
+
+### 11.3 调参建议
+
+- 约 8GB 显存：自 `--batch_size 4` 起试；OOM 则降至 2。
+
+---
+
+## 12. 如何生成数据集
+
+```powershell
+python dataset/generate_expanded_dataset.py --num_samples 2500
+```
+
+可选：`--eval_ratio 0.12`、`--seed 42`。
+
+**作用**：均衡生成并写出 `data/train_expanded.json`、`data/eval_expanded.json`、`data/dpo_pairs.jsonl`；训练与评测无 prompt 重叠。`--num_samples` 建议 **2000–3000**（脚本下限 720；论文建议 ≥2000）。
+
+---
+
+## 13. 手动运行全流程（推荐顺序）
+
+### Step 1：生成数据集
+
+```powershell
+python dataset/generate_expanded_dataset.py --num_samples 2500
+```
+
+### Step 2：训练模型
+
+示例（LoRA + SFT）：`python training/train_lora_sft.py --config configs/default.yaml`（数据路径见 `configs/default.yaml` 中 `train_sft_json`）。
+
+### Step 3：运行评测（Bandit + 扩展评测集）
+
+```powershell
+python evaluation/evaluate.py --model lora_sft --batch_size 4
+```
+
+仅 Bandit、关闭回退：`--disable-fallback-detector`。
+
+---
+
+## 14. 各实验命令（详细）
+
+以下为逐步展开的补充说明；**日常复现以第 13 节三步为主**。
+
+### 14.1 按实验类型（7 组）
+
+**前置**：已完成第 12 节数据生成，并已 `pip install bandit`（见第 10 节）。
 
 ----------------------------------
-Step 1: Run baseline
+Step A: Run baseline
 Command:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model baseline --batch_size 4`
 Explanation:
 Runs evaluation with larger batch size to improve GPU utilization.
 
 ----------------------------------
-Step 2: Adjust batch size if needed
+Step B: Adjust batch size if needed
 Command:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model baseline --batch_size 8`
 Explanation:
 Try higher batch size if GPU memory allows.
 
 ----------------------------------
-Step 3: Monitor GPU usage
+Step C: Monitor GPU usage
 Command:
 `nvidia-smi`
 Explanation:
 Check GPU utilization and memory usage in real time.
 
 ----------------------------------
-Step 4: Run LoRA only
+Step D: Run LoRA only
 Command:
 `.\.venv\Scripts\python.exe training\train_lora_only.py`
 Explanation:
@@ -285,7 +390,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model lora_only --batch_size 4`
 
 ----------------------------------
-Step 5: Run LoRA + SFT
+Step E: Run LoRA + SFT
 Command:
 `.\.venv\Scripts\python.exe training\train_lora_sft.py --config configs\default.yaml`
 Explanation:
@@ -295,7 +400,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model lora_sft --batch_size 4`
 
 ----------------------------------
-Step 6: Run LoRA + DPO
+Step F: Run LoRA + DPO
 Command:
 `.\.venv\Scripts\python.exe training\dpo_train.py --config configs\dpo.yaml`
 Explanation:
@@ -305,7 +410,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model lora_dpo --batch_size 4`
 
 ----------------------------------
-Step 7: Run QLoRA only
+Step G: Run QLoRA only
 Command:
 `.\.venv\Scripts\python.exe training\train_qlora_only.py`
 Explanation:
@@ -315,7 +420,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model qlora_only --batch_size 4`
 
 ----------------------------------
-Step 8: Run QLoRA + SFT
+Step H: Run QLoRA + SFT
 Command:
 `.\.venv\Scripts\python.exe training\train_qlora_sft.py --config configs\default.yaml`
 Explanation:
@@ -325,7 +430,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model qlora_sft --batch_size 4`
 
 ----------------------------------
-Step 9: Run QLoRA + DPO
+Step I: Run QLoRA + DPO
 Command:
 `.\.venv\Scripts\python.exe training\train_qlora_dpo.py --config configs/dpo.yaml`
 Explanation:
@@ -335,7 +440,7 @@ Then evaluate:
 `.\.venv\Scripts\python.exe evaluation\evaluate.py --model qlora_dpo --allow-missing-adapter --batch_size 4`
 
 ----------------------------------
-Step 10: Build comparison summary
+Step J: Build comparison summary
 Command:
 `.\.venv\Scripts\python.exe scripts\compare_results.py --config configs\default.yaml`
 Explanation:
