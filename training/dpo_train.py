@@ -18,9 +18,10 @@ import torch
 from datasets import Dataset
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import DPOConfig, DPOTrainer
+from trl import DPOConfig
 
 from training.config_utils import load_merged_config
+from training.stable_dpo_trainer import StableDPOTrainer
 from training.dtype_utils import cast_trainable_bf16_to_float16, print_cuda_amp_debug, summarize_parameter_dtypes
 from training.gpu_debug import GpuDebugCallback
 
@@ -104,7 +105,7 @@ def main() -> None:
     cast_trainable_bf16_to_float16(model)
 
     max_len = int(dcfg.get("max_length", 768))
-    beta = float(dcfg.get("beta", 0.1))
+    beta = float(dcfg.get("beta", 0.01))
 
     dpo_args = DPOConfig(
         output_dir=str(out_dir),
@@ -118,7 +119,7 @@ def main() -> None:
         save_strategy="steps",
         bf16=False,
         fp16=False,
-        max_grad_norm=float(tcfg.get("max_grad_norm", 1.0)),
+        max_grad_norm=1.0,
         max_length=max_len,
         beta=beta,
         precompute_ref_log_probs=True,
@@ -131,7 +132,7 @@ def main() -> None:
         gradient_checkpointing=True,
     )
 
-    trainer = DPOTrainer(
+    trainer = StableDPOTrainer(
         model=model,
         ref_model=None,
         args=dpo_args,

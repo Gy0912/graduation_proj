@@ -10,7 +10,7 @@ def run_bandit(file_path: str | Path) -> dict[str, Any]:
     """
     对单个 Python 文件执行 Bandit，并返回统一结构：
     {
-      "is_vulnerable": bool,
+      "has_issue": bool,
       "issues": list[dict]
     }
     """
@@ -24,11 +24,15 @@ def run_bandit(file_path: str | Path) -> dict[str, Any]:
     )
 
     payload = _safe_parse_bandit_json(proc.stdout)
-    issues = payload.get("results", []) if isinstance(payload, dict) else []
-    if not isinstance(issues, list):
-        issues = []
+    raw_issues = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_issues, list):
+        raw_issues = []
+    issues = [_normalize_issue(x) for x in raw_issues]
+    has_issue = len(issues) > 0
     return {
-        "is_vulnerable": len(issues) > 0,
+        "has_issue": has_issue,
+        # 兼容旧逻辑（不移除）
+        "is_vulnerable": has_issue,
         "issues": issues,
     }
 
@@ -44,3 +48,24 @@ def _safe_parse_bandit_json(stdout: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         return {"results": []}
     return parsed
+
+
+def _normalize_issue(issue: Any) -> dict[str, Any]:
+    """
+    不过滤 issue，仅做字段规范化，便于后续稳定统计。
+    """
+    if not isinstance(issue, dict):
+        return {
+            "test_id": "UNKNOWN",
+            "severity": "UNKNOWN",
+            "confidence": "UNKNOWN",
+            "text": str(issue),
+            "line_number": -1,
+        }
+    return {
+        "test_id": str(issue.get("test_id", "UNKNOWN")),
+        "severity": str(issue.get("issue_severity", issue.get("severity", "UNKNOWN"))),
+        "confidence": str(issue.get("issue_confidence", issue.get("confidence", "UNKNOWN"))),
+        "text": str(issue.get("issue_text", issue.get("text", ""))),
+        "line_number": int(issue.get("line_number", -1)) if str(issue.get("line_number", "-1")).lstrip("-").isdigit() else -1,
+    }

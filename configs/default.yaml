@@ -29,13 +29,14 @@ files:
   # 主训练集（instruction / input / output + attack_type / difficulty / task_type）
   sql_security_dataset: dataset/sql_security_dataset.json
   # 扩展流水线（建议 2000–3000 条总量）：python dataset/generate_expanded_dataset.py --num_samples 2500
-  train_sft_json: data/train_expanded.json
-  dpo_pairs: data/dpo_pairs.jsonl
+  # 研究 schema（含 id / vulnerability_type / input_code）：由 generate_expanded_dataset 写出
+  train_sft_json: data/combined/train.json
+  dpo_pairs: data/dpo_pairs.json
   train_sft: dataset/sft_train.jsonl
   val_sft: dataset/sft_val.jsonl
   train_dpo: dataset/dpo_train.jsonl
-  # 评测 prompts：JSON 数组或 JSONL（所有实验共用同一套）
-  eval_prompts: data/eval_expanded.json
+  # 评测集：推荐 data/combined/eval.json（研究 schema）；兼容 data/eval_expanded.json
+  eval_prompts: data/combined/eval.json
 
 generation:
   max_new_tokens: 256
@@ -47,6 +48,9 @@ eval:
   per_device_eval_batch_size: 4
   dataloader_num_workers: 2
   dataloader_pin_memory: true
+  # 检测合并：or（默认，Bandit 仅 B608 计入 SQL 层）| or_bandit_any | weighted
+  merge_mode: or
+  enable_taint: false
 
 training:
   max_seq_len: 1024
@@ -77,12 +81,14 @@ training:
   lora_target_modules: auto
 
 dpo:
-  beta: 0.1
+  beta: 0.01
   # DPO 双前向，768 更省显存（8GB）；可在 configs/dpo.yaml 覆盖为 1024
   max_length: 768
   max_prompt_length: 512
 
 outputs:
+  # 恒安全输出对照（不加载 LLM）：用于验证 classification_vs_expected / recall_vulnerable
+  always_safe_results: outputs/always_safe_results.json
   baseline_results: outputs/baseline_results.json
   lora_only_results: outputs/lora_only_results.json
   lora_sft_results: outputs/lora_sft_results.json
@@ -91,3 +97,4 @@ outputs:
   qlora_sft_results: outputs/qlora_sft_results.json
   qlora_dpo_results: outputs/qlora_dpo_results.json
   comparison_summary: outputs/comparison_summary.json
+  compare_results: outputs/compare_results.json

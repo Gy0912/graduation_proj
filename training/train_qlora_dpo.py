@@ -10,7 +10,7 @@ import torch
 from datasets import Dataset
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import DPOConfig, DPOTrainer
+from trl import DPOConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from training.config_utils import load_merged_config
 from training.dtype_utils import cast_trainable_bf16_to_float16
+from training.stable_dpo_trainer import StableDPOTrainer
 
 
 def require_cuda() -> None:
@@ -95,9 +96,9 @@ def run_qlora_dpo(config_path: str) -> None:
         save_strategy="steps",
         bf16=False,
         fp16=False,
-        max_grad_norm=float(tcfg.get("max_grad_norm", 1.0)),
+        max_grad_norm=1.0,
         max_length=int(dcfg.get("max_length", 768)),
-        beta=float(dcfg.get("beta", 0.1)),
+        beta=float(dcfg.get("beta", 0.01)),
         precompute_ref_log_probs=True,
         precompute_ref_batch_size=1,
         dataset_num_proc=1,
@@ -108,7 +109,7 @@ def run_qlora_dpo(config_path: str) -> None:
         gradient_checkpointing=True,
     )
 
-    trainer = DPOTrainer(
+    trainer = StableDPOTrainer(
         model=model,
         ref_model=None,
         args=dpo_args,

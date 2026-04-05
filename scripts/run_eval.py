@@ -21,10 +21,17 @@ def main() -> None:
     p.add_argument("--tag", default="custom_adapter_eval", help="记录到 meta 中")
     p.add_argument("--load-in-4bit", action="store_true")
     p.add_argument(
+        "--disable-rule-based",
+        action="store_true",
+        help="关闭规则层检测",
+    )
+    p.add_argument(
         "--disable-fallback-detector",
         action="store_true",
-        help="仅使用 Bandit，不启用轻量规则回退检测",
+        help="已弃用，同 --disable-rule-based",
     )
+    p.add_argument("--merge-mode", default="or", choices=("or", "or_bandit_any", "weighted"))
+    p.add_argument("--enable-taint", action="store_true")
     args = p.parse_args()
 
     with open(ROOT / args.config, "r", encoding="utf-8") as f:
@@ -34,7 +41,9 @@ def main() -> None:
     gen = cfg["generation"]
     out_path = args.output
 
+    ev_cfg = cfg.get("eval", {})
     eval_samples = load_eval_prompts(ROOT / files["eval_prompts"])
+    disable_rules = bool(args.disable_rule_based or args.disable_fallback_detector)
     bundle = run_eval_on_prompts(
         samples=eval_samples,
         base_model=cfg["model"]["base_model"],
@@ -43,14 +52,18 @@ def main() -> None:
         top_p=gen["top_p"],
         load_in_4bit=bool(args.load_in_4bit),
         adapter_path=args.adapter,
-        enable_fallback_detector=not bool(args.disable_fallback_detector),
+        merge_mode=args.merge_mode,
+        enable_rule_based=not disable_rules,
+        enable_taint=bool(args.enable_taint or ev_cfg.get("enable_taint", False)),
     )
     meta = {
         "mode": args.tag,
         "base_model": cfg["model"]["base_model"],
         "adapter_path": args.adapter,
         "config": args.config,
-        "enable_fallback_detector": not bool(args.disable_fallback_detector),
+        "merge_mode": args.merge_mode,
+        "enable_rule_based": not disable_rules,
+        "enable_taint": bool(args.enable_taint or ev_cfg.get("enable_taint", False)),
     }
     save_results(ROOT / out_path, bundle, meta)
     print(f"[OK] wrote {ROOT / out_path}")

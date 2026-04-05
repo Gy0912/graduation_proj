@@ -84,9 +84,12 @@ def build_sft_dataset_from_records(
     prompts: list[str] = []
     completions: list[str] = []
     for r in records:
+        inp = r.get("input", "")
+        if inp is None or (isinstance(inp, str) and not inp.strip()):
+            inp = r.get("input_code", "") or ""
         p, c = row_to_prompt_completion(
             str(r.get("instruction", "")),
-            str(r.get("input", "")),
+            str(inp),
             str(r.get("output", "")),
         )
         prompts.append(p)

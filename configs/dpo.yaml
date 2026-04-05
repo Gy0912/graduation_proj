@@ -5,7 +5,7 @@ paths:
   dpo_lora_dir: outputs/models/lora_dpo_starcoder2_3b
 
 files:
-  dpo_pairs: data/dpo_pairs.jsonl
+  dpo_pairs: data/dpo_pairs.json
 
 training:
   learning_rate_dpo: 5.0e-7
@@ -14,5 +14,5 @@ training:
   save_steps: 200
 
 dpo:
-  beta: 0.1
+  beta: 0.01
   max_length: 768

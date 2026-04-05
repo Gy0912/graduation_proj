@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evaluation.evaluator import run_eval_on_prompts, save_results
+from evaluation.evaluator import run_eval_always_safe, run_eval_on_prompts, save_results
+from evaluation.experiment_log import setup_file_logging
 from evaluation.prompt_loader import load_eval_prompts
 
 
@@ -22,6 +23,7 @@ SUPPORTED_MODELS = (
     "qlora_only",
     "qlora_sft",
     "qlora_dpo",
+    "always_safe_model",
 )
 
 
@@ -42,6 +44,8 @@ def resolve_eval_plan(cfg: dict, model_name: str) -> tuple[str | None, bool, str
         return paths["qlora_sft_dir"], True, outs["qlora_sft_results"]
     if model_name == "qlora_dpo":
         return paths["qlora_dpo_dir"], True, outs["qlora_dpo_results"]
+    if model_name == "always_safe_model":
+        return None, False, outs.get("always_safe_results", "outputs/always_safe_results.json")
     raise ValueError(f"unsupported model: {model_name}")
 
 
@@ -61,17 +65,41 @@ def main() -> None:
         help="若适配器不存在则给出警告并退出（码 0）",
     )
     parser.add_argument(
+        "--disable-rule-based",
+        action="store_true",
+        help="关闭规则层，仅依赖 Bandit",
+    )
+    parser.add_argument(
         "--disable-fallback-detector",
         action="store_true",
-        help="仅使用 Bandit，不启用轻量规则回退检测",
+        help="已弃用：等同于 --disable-rule-based",
+    )
+    parser.add_argument(
+        "--merge-mode",
+        default=None,
+        choices=("or", "or_bandit_any", "weighted"),
+        help="覆盖配置 eval.merge_mode：合并 Bandit 与规则层的方式",
+    )
+    parser.add_argument(
+        "--enable-taint",
+        action="store_true",
+        help="启用动态污点追踪（sqlite3 execute 探针，较慢）",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="若设置，将评测运行日志写入该目录（如 logs/experiments）",
     )
     args = parser.parse_args()
 
     with open(ROOT / args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    if args.log_dir:
+        setup_file_logging(ROOT / args.log_dir, name=f"eval_{args.model}")
+
     adapter_path, load_in_4bit, output_path = resolve_eval_plan(cfg, args.model)
-    if adapter_path is not None and not (ROOT / adapter_path).exists():
+    if args.model != "always_safe_model" and adapter_path is not None and not (ROOT / adapter_path).exists():
         msg = (
             f"[WARN] adapter not found for {args.model}: {ROOT / adapter_path}. "
             "Skip evaluation."
@@ -91,21 +119,37 @@ def main() -> None:
     )
     num_workers = int(ev_cfg.get("dataloader_num_workers", 2))
     pin_memory = bool(ev_cfg.get("dataloader_pin_memory", True))
-    eval_samples = load_eval_prompts(ROOT / files["eval_prompts"])
-    bundle = run_eval_on_prompts(
-        samples=eval_samples,
-        base_model=cfg["model"]["base_model"],
-        max_new_tokens=gen["max_new_tokens"],
-        temperature=gen["temperature"],
-        top_p=gen["top_p"],
-        load_in_4bit=load_in_4bit,
-        adapter_path=str(ROOT / adapter_path) if adapter_path else None,
-        per_device_eval_batch_size=batch_size,
-        dataloader_num_workers=num_workers,
-        dataloader_pin_memory=pin_memory,
-        debug_timing=True,
-        enable_fallback_detector=not bool(args.disable_fallback_detector),
+    merge_mode = str(args.merge_mode or ev_cfg.get("merge_mode", "or"))
+    enable_taint = bool(args.enable_taint or ev_cfg.get("enable_taint", False))
+    disable_rules = bool(
+        args.disable_rule_based or args.disable_fallback_detector
     )
+    enable_rule_based = not disable_rules
+    eval_samples = load_eval_prompts(ROOT / files["eval_prompts"])
+    if args.model == "always_safe_model":
+        bundle = run_eval_always_safe(
+            samples=eval_samples,
+            merge_mode=merge_mode,
+            enable_rule_based=enable_rule_based,
+            enable_taint=enable_taint,
+        )
+    else:
+        bundle = run_eval_on_prompts(
+            samples=eval_samples,
+            base_model=cfg["model"]["base_model"],
+            max_new_tokens=gen["max_new_tokens"],
+            temperature=gen["temperature"],
+            top_p=gen["top_p"],
+            load_in_4bit=load_in_4bit,
+            adapter_path=str(ROOT / adapter_path) if adapter_path else None,
+            per_device_eval_batch_size=batch_size,
+            dataloader_num_workers=num_workers,
+            dataloader_pin_memory=pin_memory,
+            debug_timing=True,
+            merge_mode=merge_mode,
+            enable_rule_based=enable_rule_based,
+            enable_taint=enable_taint,
+        )
     meta = {
         "mode": args.model,
         "base_model": cfg["model"]["base_model"],
@@ -116,7 +160,10 @@ def main() -> None:
         "dataloader_pin_memory": pin_memory,
         "config": args.config,
         "eval_dataset": files["eval_prompts"],
-        "enable_fallback_detector": not bool(args.disable_fallback_detector),
+        "merge_mode": merge_mode,
+        "enable_rule_based": enable_rule_based,
+        "enable_taint": enable_taint,
+        "always_safe_stub": args.model == "always_safe_model",
     }
     save_results(ROOT / output_path, bundle, meta)
     print(f"[OK] wrote {ROOT / output_path}")
