@@ -76,10 +76,11 @@
 │   ├── README.md
 │   ├── build_dataset.py
 │   ├── compare_results.py
+│   ├── prepare_default_run.py
+│   ├── prepare_bandit_only_run.py
 │   ├── migrate_dataset_to_research_schema.py
 │   ├── plot_results.py
-│   ├── run_baseline.py
-│   ├── run_eval.py
+│   ├── 00_prepare_env.ps1
 │   └── run_thesis_pipeline.py
 └── training/
     ├── __init__.py
@@ -91,8 +92,6 @@
     ├── gpu_debug.py
     ├── lora_utils.py
     ├── sft_preprocess.py
-    ├── train_dpo.py
-    ├── train_lora_dpo.py
     ├── train_lora_only.py
     ├── train_lora_sft.py
     ├── train_qlora_dpo.py
@@ -114,7 +113,9 @@
 | 文件 | 作用 |
 |------|------|
 | `default.yaml` | 基座模型路径、数据路径、训练/评测参数、`outputs` 结果文件名、`eval.merge_mode` |
-| `dpo.yaml` | 与 default 合并：DPO 学习率、输出目录等覆盖项 |
+| `default_run.yaml` | 由 `scripts/prepare_default_run.py` 生成，默认实验运行配置 |
+| `default_bandit_only_run.yaml` | 由 `scripts/prepare_bandit_only_run.py` 生成，输出文件名带 `_bandit_only` |
+| `dpo.yaml` | 与 default/default_run 合并：DPO 学习率、输出目录等覆盖项 |
 
 ## data/
 
@@ -123,7 +124,7 @@
 | `combined/train.json` / `eval.json` | 研究 schema：含 `task_type`、`expected_vulnerable`、`vulnerability_type`、`difficulty`、`input_code`；训练含 `output` |
 | `generation/`、`fix/` | 按 `task_type` 拆分的 train/eval |
 | `train_expanded.json` / `eval_expanded.json` | 生成器写出的扁平格式（兼容旧流程） |
-| `dpo_pairs.json` | DPO 用 JSONL 行格式（prompt/chosen/rejected） |
+| `dpo_pairs.json` | DPO 偏好对（默认配置引用） |
 | `schema/dataset_sample.schema.json` | 样本 JSON Schema |
 | `samples/examples_research_schema.json` | 小样本示例 |
 
@@ -174,8 +175,9 @@
 | `plot_results.py` | 读取各模型结果 JSON，生成 SQL 注入率与 FPR/FNR 柱状图（matplotlib） |
 | `compare_results.py` | 汇总多模型 `outputs/*_results.json` 为 `comparison_summary.json` |
 | `build_dataset.py` | 从合成配置写 `dataset/*.jsonl`（小数据/旧流水线） |
-| `run_eval.py` | 指定 adapter 路径的评测入口 |
-| `run_baseline.py` | 转发 baseline 评测 |
+| `prepare_default_run.py` | 从 `configs/default.yaml` 生成 `configs/default_run.yaml` |
+| `prepare_bandit_only_run.py` | 基于 `default_run.yaml` 生成 `default_bandit_only_run.yaml` |
+| `00_prepare_env.ps1` | Windows 下创建 venv 并安装依赖 |
 | `run_thesis_pipeline.py` | 可选端到端流水线 |
 
 ## training/
@@ -188,7 +190,6 @@
 | `train_qlora_only.py` | 4bit + LoRA 仅挂载 |
 | `train_qlora_sft.py` | QLoRA + SFT |
 | `train_qlora_dpo.py` | QLoRA + DPO |
-| `train_lora_dpo.py` / `train_dpo.py` | 转发到 `dpo_train` |
 | `sft_preprocess.py` | instruction/input/output 分词与 completion mask |
 | `lora_utils.py` | target_modules 解析 |
 | `config_utils.py` | YAML 深度合并（DPO 配置） |

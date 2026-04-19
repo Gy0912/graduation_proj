@@ -4,26 +4,45 @@
 
 面向 Python **SQL 注入**的代码大模型研究：安全代码生成与漏洞修复；管线包含数据准备、LoRA/QLoRA/SFT/DPO 训练，以及对生成代码的**规则层 + Bandit** 静态检测，以及可选的**动态污点追踪**；并与数据集中的 `expected_vulnerable` 对齐计算 Precision、Recall、F1、FPR、FNR 与混淆矩阵。
 
-## 目录结构
+## 项目结构
 
 ```
-.
-├── configs/               # 训练与评测 YAML 配置
-├── data/                  # 训练/评测/DPO 等 JSON 数据与 schema
-├── dataset/               # 数据集生成脚本与合成逻辑
-├── detection/             # 规则、Bandit、污点追踪与统一 detect_vulnerability
-├── evaluation/            # 评测入口、指标聚合、prompt 加载
-├── logs/                  # 实验与错误日志（可选）
-├── models/                # 本地模型或说明占位
-├── outputs/               # 评测 JSON 与训练产出适配器路径
-├── reports/               # 报告与操作说明（若有）
-├── scripts/               # 数据集构建、评测兼容入口、结果对比等
-├── visualization/         # 汇总对比指标绘图（matplotlib）
-├── training/              # LoRA/QLoRA/SFT/DPO 训练脚本与工具
-├── pyproject.toml         # 项目元数据与工具配置
-├── requirements.txt       # Python 依赖
-└── README.md              # 本说明
+project_root/
+├── configs/                         # 配置文件（default/default_run/dpo）
+├── data/                            # 训练/评测/DPO 数据（JSON/JSONL）
+│   ├── combined/                    # 主流程 train/eval（研究 schema）
+│   ├── generation/                  # 按任务拆分数据
+│   ├── fix/                         # 按任务拆分数据
+│   ├── dpo_pairs.json               # DPO 偏好对（默认配置引用）
+│   ├── train_expanded.json          # 兼容旧流程的扩展训练集
+│   └── eval_expanded.json           # 兼容旧流程的扩展评测集
+├── dataset/                         # 数据生成脚本（主入口见 generate_expanded_dataset.py）
+├── detection/                       # 漏洞检测（规则/Bandit/污点）
+├── evaluation/                      # 统一评测入口与指标聚合
+├── training/                        # 统一训练入口脚本
+├── scripts/                         # 配置准备、数据构建、汇总与管线脚本
+├── visualization/                   # 结果可视化脚本
+├── outputs/                         # 评测结果 JSON 与训练产物
+├── logs/                            # 运行日志与变更日志
+├── models/                          # 模型路径说明（实际适配器默认在 outputs/models）
+├── reports/                         # 历史分析与操作说明
+├── requirements.txt                 # Python 依赖
+└── README.md                        # 项目总说明
 ```
+
+## 统一入口（已精简）
+
+- 训练入口（唯一）：
+  - `training/train_lora_only.py`
+  - `training/train_lora_sft.py`
+  - `training/dpo_train.py`
+  - `training/train_qlora_only.py`
+  - `training/train_qlora_sft.py`
+  - `training/train_qlora_dpo.py`
+- 评测入口（唯一）：`evaluation/evaluate.py`
+- 推理/输出入口（统一到评测生成与落盘）：`evaluation/evaluate.py`
+
+说明：已移除重复的 DPO/Baseline 兼容转发脚本，保留单一主入口，训练与评测逻辑不变。
 
 ## 如何运行
 
@@ -47,6 +66,18 @@ Set-Location e:\graduation_proj
 .\.venv\Scripts\python.exe dataset/generate_expanded_dataset.py --num_samples 2500 --eval_ratio 0.12 --seed 42
 .\.venv\Scripts\python.exe scripts/build_dataset.py --config configs/default_run.yaml
 ```
+
+### 校验整合后的评测集（统一入口）
+
+```powershell
+Set-Location e:\graduation_proj
+python -c "import json,pathlib; p=pathlib.Path(r'data/combined/eval.json'); rows=[json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]; print('total=',len(rows)); print('max_id=',max(r['id'] for r in rows))"
+```
+
+说明：
+- `dataset/generate_expanded_dataset.py`：生成主流程研究数据（`data/combined/*.json`、`data/eval_expanded.json`、DPO 偏好对等）。
+- `scripts/build_dataset.py`：按配置生成 `dataset/*.jsonl`（兼容/补充流程）。
+- 新增高难评测样本已合并到 `data/combined/eval.json`，保持评测加载路径不变。
 
 ### 训练（6 个适配器；baseline 不参与训练，仅评测）
 
@@ -82,6 +113,38 @@ Set-Location e:\graduation_proj
 ```powershell
 .\.venv\Scripts\python.exe visualization/plot_compare_metrics.py --input outputs/compare_results.json --output-dir outputs/plots
 ```
+
+## 执行流程（数据流）
+
+1. **数据准备**  
+   `dataset/generate_expanded_dataset.py` 生成训练/评测样本与 DPO 偏好对；可选执行 `scripts/build_dataset.py` 生成 `dataset/*.jsonl`。
+
+2. **训练流程**  
+   使用 `training/*` 入口训练 LoRA/QLoRA/SFT/DPO 适配器，产物写入 `outputs/models/*`。
+
+3. **推理与输出生成**  
+   统一通过 `evaluation/evaluate.py --model <name>` 加载基座模型与对应适配器，生成代码并写入 `outputs/*_results.json`。
+
+4. **指标汇总与可视化**  
+   `scripts/compare_results.py` 聚合多模型结果；`visualization/plot_compare_metrics.py` 读取汇总结果绘图。
+
+## 手动验收（行为保持不变）
+
+按下面顺序执行，可验证入口清理后功能一致：
+
+```powershell
+Set-Location e:\graduation_proj
+.\.venv\Scripts\python.exe training/train_lora_sft.py --config configs/default_run.yaml
+.\.venv\Scripts\python.exe training/dpo_train.py --config configs/dpo.yaml
+.\.venv\Scripts\python.exe evaluation/evaluate.py --config configs/default_run.yaml --model lora_dpo
+.\.venv\Scripts\python.exe scripts/compare_results.py --config configs/default_run.yaml
+```
+
+期望结果：
+
+- 训练脚本正常结束，并在 `outputs/models/` 下生成对应适配器目录。
+- 评测脚本输出 `[OK] wrote ...`，并写入 `outputs/lora_dpo_results.json`。
+- 汇总脚本输出 `[OK] wrote ...`，并更新 `outputs/comparison_summary.json` 与 `outputs/compare_results.json`。
 
 ## 评测方法说明
 

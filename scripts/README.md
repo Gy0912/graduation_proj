@@ -1,14 +1,16 @@
 # scripts/
 
-## 新流水线（论文主用）
+## 脚本清单（当前有效）
 
 | 脚本 | 作用 |
 |------|------|
+| `00_prepare_env.ps1` | Windows 下创建虚拟环境并安装依赖 |
 | `build_dataset.py` | 生成 `dataset/*.jsonl` |
 | `compare_results.py` | 汇总 7 组实验对比 → `outputs/comparison_summary.json` |
+| `migrate_dataset_to_research_schema.py` | 将扩展数据迁移到 `data/combined` 研究 schema |
+| `plot_results.py` | 从各模型结果 JSON 画 SQL 注入率与 FPR/FNR 图 |
+| `prepare_default_run.py` | 从 `configs/default.yaml` 生成 `configs/default_run.yaml` |
+| `prepare_bandit_only_run.py` | 从 `default_run.yaml` 生成 `default_bandit_only_run.yaml` |
 | `run_thesis_pipeline.py` | 顺序跑全流程（支持 `--skip-lora-dpo/--skip-qlora-dpo`） |
-| `run_baseline.py` | 兼容入口（内部转发到 `evaluation/evaluate.py --model baseline`） |
-| `run_eval.py` | 兼容入口（自定义 adapter 评测） |
-| `00_prepare_env.ps1` | Windows 创建 venv 与依赖 |
 
-旧版 `scripts/legacy/*` 已移除；请使用根目录 `README.md` 中的主流水线命令。
+统一术语：训练入口在 `training/`，评测入口在 `evaluation/evaluate.py`，本目录主要提供准备与编排脚本。

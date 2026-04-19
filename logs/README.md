@@ -14,8 +14,9 @@
 
 评测时启用文件日志：
 
-```bash
-python evaluation/evaluate.py --model baseline --log-dir logs/experiments
+```powershell
+Set-Location e:\graduation_proj
+.\.venv\Scripts\python.exe evaluation/evaluate.py --config configs/default_run.yaml --model baseline --log-dir logs/experiments
 ```
 
 或在自定义脚本中调用 `evaluation.experiment_log.setup_file_logging`。
